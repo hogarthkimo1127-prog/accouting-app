@@ -3,14 +3,13 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>雲端隨手記帳</title>
+    <title>雲端隨手記帳（支援 CSV 匯出）</title>
     <script src="https://cdn.tailwindcss.com"></script>
 </head>
 <body class="bg-gray-100 font-sans antialiased">
 
     <div class="max-w-md mx-auto bg-white min-h-screen shadow-lg flex flex-col justify-between">
         
-        <!-- 登入區塊（若未登入則顯示） -->
         <div id="login-section" class="p-5 flex flex-col items-center justify-center flex-1 space-y-4">
             <h1 class="text-3xl font-bold text-gray-800">💰 雲端隨手記帳</h1>
             <p class="text-gray-500 text-center">支援手機與電腦即時雲端同步</p>
@@ -19,9 +18,7 @@
             </button>
         </div>
 
-        <!-- 主程式區塊（登入後才顯示） -->
         <div id="main-section" class="hidden flex-1 flex flex-col justify-between min-h-screen">
-            <!-- 上方：總覽與明細 -->
             <div class="p-5 flex-1 overflow-y-auto">
                 <div class="flex justify-between items-center mb-4">
                     <h1 class="text-2xl font-bold text-gray-800">💰 雲端隨手記帳</h1>
@@ -33,13 +30,17 @@
                     <p class="text-3xl font-extrabold mt-1">NT$ <span id="total-amount">0</span></p>
                 </div>
 
-                <h3 class="text-lg font-bold text-gray-700 mb-3">消費明細</h3>
+                <div class="flex justify-between items-center mb-3">
+                    <h3 class="text-lg font-bold text-gray-700">消費明細</h3>
+                    <button id="btn-export" class="text-sm bg-green-600 text-white px-3 py-1.5 rounded-xl hover:bg-green-700 font-bold shadow-sm transition active:scale-95">
+                        📊 匯出 CSV
+                    </button>
+                </div>
+
                 <ul id="history-list" class="space-y-3">
-                    <!-- 資料會從 Firebase 即時讀取並插入 -->
-                </ul>
+                    </ul>
             </div>
 
-            <!-- 下方：記帳輸入表單 -->
             <div class="bg-gray-50 p-5 border-t border-gray-200 sticky bottom-0">
                 <form id="record-form" class="space-y-3">
                     <div class="grid grid-cols-3 gap-2">
@@ -59,7 +60,6 @@
         </div>
     </div>
 
-    <!-- 引入 Firebase SDK (模組化版本) -->
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-app.js";
         import { getAuth, signInWithPopup, GoogleAuthProvider, signOut, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-auth.js";
@@ -82,50 +82,54 @@
         const db = getFirestore(app);
         const provider = new GoogleAuthProvider();
 
+        // 建立全域變數，用來即時儲存從雲端下載的資料，方便 CSV 匯出功能使用
+        window.currentRecords = []; 
         let currentUser = null;
-        let unsubscribeTimeline = null; // 用於登出時取消監聽
+        let unsubscribeTimeline = null;
 
         // DOM 元素
         const loginSection = document.getElementById('login-section');
         const mainSection = document.getElementById('main-section');
         const btnLogin = document.getElementById('btn-login');
         const btnLogout = document.getElementById('btn-logout');
+        const btnExport = document.getElementById('btn-export');
         const form = document.getElementById('record-form');
         const historyList = document.getElementById('history-list');
         const totalAmountEl = document.getElementById('total-amount');
 
-        // 監聽登入狀態改變
+        // 監聽登入狀態
         onAuthStateChanged(auth, (user) => {
             if (user) {
                 currentUser = user;
                 loginSection.classList.add('hidden');
                 mainSection.classList.remove('hidden');
-                startListeningRecords(user.uid); // 開始即時同步資料
+                startListeningRecords(user.uid);
             } else {
                 currentUser = null;
                 loginSection.classList.remove('hidden');
                 mainSection.classList.add('hidden');
-                if (unsubscribeTimeline) unsubscribeTimeline(); // 停止監聽
+                if (unsubscribeTimeline) unsubscribeTimeline();
             }
         });
 
-        // 登入與登出事件
         btnLogin.addEventListener('click', () => signInWithPopup(auth, provider));
         btnLogout.addEventListener('click', () => signOut(auth));
 
-        // 即時監聽雲端資料庫（Firestore）的資料變化
+        // 即時監聽雲端資料庫
         function startListeningRecords(uid) {
-            // 查詢條件：屬於目前使用者，且依照時間由新到舊排序
             const q = query(collection(db, "accounting_records"), where("uid", "==", uid), orderBy("createdAt", "desc"));
             
-            // onSnapshot 是 Firebase 的大招，雲端一變動，這裡就會自動觸發更新畫面
             unsubscribeTimeline = onSnapshot(q, (snapshot) => {
                 historyList.innerHTML = '';
                 let total = 0;
+                window.currentRecords = []; // 每次雲端有變動，先清空舊的快取
 
                 snapshot.forEach((doc) => {
                     const record = doc.data();
                     total += Number(record.amount);
+                    
+                    // 把每一筆資料存進快取陣列中（同時附帶一個雲端的 docId，日後可能有用）
+                    window.currentRecords.push({ id: doc.id, ...record });
 
                     const li = document.createElement('li');
                     li.className = 'flex justify-between items-center bg-white p-4 rounded-xl shadow-sm border border-gray-100';
@@ -139,7 +143,6 @@
                         </div>
                         <div class="flex items-center space-x-3">
                             <span class="font-bold text-red-500">-$${record.amount}</span>
-                            <!-- 綁定刪除事件，傳入雲端文件的 ID -->
                             <button class="btn-delete text-gray-300 hover:text-red-500 text-sm" data-id="${doc.id}">✕</button>
                         </div>
                     `;
@@ -148,7 +151,7 @@
 
                 totalAmountEl.innerText = total.toLocaleString();
 
-                // 重新綁定所有刪除按鈕的點擊事件
+                // 綁定刪除事件
                 document.querySelectorAll('.btn-delete').forEach(button => {
                     button.addEventListener('click', async (e) => {
                         const id = e.target.getAttribute('data-id');
@@ -167,16 +170,54 @@
             const noteInput = document.getElementById('note');
 
             await addDoc(collection(db, "accounting_records"), {
-                uid: currentUser.uid, // 確保資料與帳號綁定
+                uid: currentUser.uid,
                 category: document.getElementById('category').value,
                 amount: amountInput.value,
                 note: noteInput.value,
                 date: new Date().toLocaleDateString('zh-TW'),
-                createdAt: new Date().getTime() // 用於排序的時間戳記
+                createdAt: new Date().getTime()
             });
 
             amountInput.value = '';
             noteInput.value = '';
+        });
+
+        // 📊 點擊按鈕匯出 CSV 檔案的邏輯
+        btnExport.addEventListener('click', () => {
+            if (window.currentRecords.length === 0) {
+                alert('目前雲端沒有任何記帳資料可以匯出！');
+                return;
+            }
+
+            // 1. 為了防止 Excel 開啟時繁體中文變成亂碼，必須加上BOM開頭 "\uFEFF"
+            let csvContent = "\uFEFF"; 
+            csvContent += "日期,分類,金額,備註\n";
+
+            // 2. 雲端監聽預設是「由新到舊」，匯出成 CSV 時轉回「由舊到新」比較符合統計軟體的習慣
+            const exportData = [...window.currentRecords].reverse();
+
+            exportData.forEach(record => {
+                // 清除備註可能包含的英文逗號（,），避免弄亂 CSV 的欄位切分
+                const cleanNote = record.note ? record.note.replace(/,/g, " ") : "";
+                
+                // 組裝成一列 CSV 資料
+                const row = `"${record.date}","${record.category}",${record.amount},"${cleanNote}"`;
+                csvContent += row + "\n";
+            });
+
+            // 3. 虛擬建立一個下載連結，觸發瀏覽器下載檔案
+            const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+            const url = URL.createObjectURL(blob);
+            const link = document.createElement("a");
+            
+            // 檔名會自動帶上今天的日期
+            const today = new Date().toISOString().split('T')[0];
+            link.setAttribute("href", url);
+            link.setAttribute("download", `我的帳目備份_${today}.csv`);
+            
+            document.body.appendChild(link);
+            link.click(); // 模擬點擊
+            document.body.removeChild(link); // 用完刪除連結
         });
     </script>
 </body>
